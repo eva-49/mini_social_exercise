@@ -18,6 +18,9 @@
   function removeWarning(form) {
     const old = form.querySelector('.norm-warning');
     if (old) old.remove();
+    // bring the normal submit button back (it is hidden while a reminder is shown)
+    const submitBtn = form.querySelector('button[type="submit"]');
+    if (submitBtn) submitBtn.classList.remove('d-none');
   }
 
   // Builds the reminder box inside the form (no extra modal, so it also works
@@ -114,12 +117,7 @@
   document.addEventListener('input', function (e) {
     const form = e.target.closest ? e.target.closest('form.norm-check') : null;
     if (!form) return;
-    const box = form.querySelector('.norm-warning');
-    if (box) {
-      box.remove();
-      const submitBtn = form.querySelector('button[type="submit"]');
-      if (submitBtn) submitBtn.classList.remove('d-none');
-    }
+    if (form.querySelector('.norm-warning')) removeWarning(form);
   });
 })();
 </script>
