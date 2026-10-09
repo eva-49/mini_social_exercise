@@ -1,0 +1,126 @@
+{# Norm reminder (Design Claim 20): shows a warning right before a post/comment
+   is submitted. Included once at the bottom of feed.html.j2 and post_detail.html.j2.
+   Works for every <form class="norm-check" data-kind="post|comment">. #}
+{% if session.get('user_id') %}
+<script>
+(function () {
+  // Bootstrap alert colour per risk level
+  const LEVEL_STYLE = { NONE: 'alert-info', LOW: 'alert-warning', MEDIUM: 'alert-warning', HIGH: 'alert-danger' };
+
+  function postJSON(url, body) {
+    return fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+  }
+
+  function removeWarning(form) {
+    const old = form.querySelector('.norm-warning');
+    if (old) old.remove();
+  }
+
+  // Builds the reminder box inside the form (no extra modal, so it also works
+  // inside the "Add comment" modal). textContent is used so user text is never
+  // interpreted as HTML.
+  function showWarning(form, textarea, result) {
+    removeWarning(form);
+    const kind = form.dataset.kind || 'post';
+
+    const box = document.createElement('div');
+    box.className = 'norm-warning alert ' + (LEVEL_STYLE[result.level] || 'alert-warning') + ' mt-3';
+
+    const title = document.createElement('strong');
+    title.textContent = 'Please check your ' + kind + ' before posting';
+    box.appendChild(title);
+
+    const info = document.createElement('p');
+    info.className = 'mb-2 mt-1';
+    const levelText = result.level === 'NONE' ? 'minor issue' : result.level + ' risk';
+    info.textContent = 'Our community rules apply here. Your ' + kind + ' would be rated: '
+      + levelText + ' (score ' + result.score + ').';
+    box.appendChild(info);
+
+    if (result.changed) {
+      const label = document.createElement('div');
+      label.className = 'small text-muted';
+      label.textContent = 'This is how it would appear after moderation:';
+      box.appendChild(label);
+
+      const preview = document.createElement('div');
+      preview.className = 'border rounded bg-white p-2 mb-2';
+      preview.textContent = result.moderated;
+      box.appendChild(preview);
+    }
+
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.className = 'btn btn-sm btn-primary me-2';
+    editBtn.textContent = 'Edit my ' + kind;
+    editBtn.addEventListener('click', function () {
+      postJSON('/moderation/log', { kind: kind, decision: 'edited', score: result.score });
+      removeWarning(form);
+      textarea.focus();
+    });
+
+    const postBtn = document.createElement('button');
+    postBtn.type = 'button';
+    postBtn.className = 'btn btn-sm btn-outline-secondary';
+    postBtn.textContent = 'Post anyway';
+    postBtn.addEventListener('click', async function () {
+      try {
+        await postJSON('/moderation/log', { kind: kind, decision: 'posted_anyway', score: result.score });
+      } catch (err) { /* logging must never block posting */ }
+      form.dataset.normOk = '1';
+      form.submit();
+    });
+
+    box.appendChild(editBtn);
+    box.appendChild(postBtn);
+
+    // Put the box directly in front of the normal submit button
+    const submitBtn = form.querySelector('button[type="submit"]');
+    form.insertBefore(box, submitBtn);
+    if (submitBtn) submitBtn.classList.add('d-none');   // hide normal button while the reminder is shown
+  }
+
+  // Intercept submit of every form marked with class "norm-check"
+  document.addEventListener('submit', async function (e) {
+    const form = e.target;
+    if (!form.classList || !form.classList.contains('norm-check')) return;
+    if (form.dataset.normOk === '1') return;            // user already saw the reminder
+
+    e.preventDefault();
+    const textarea = form.querySelector('textarea[name="content"]');
+
+    try {
+      const res = await postJSON('/moderation/check', { content: textarea.value });
+      if (!res.ok) throw new Error('check failed');
+      const result = await res.json();
+
+      if (result.score > 0) {
+        showWarning(form, textarea, result);            // possible violation -> remind first
+      } else {
+        form.dataset.normOk = '1';                      // clean text -> post directly
+        form.submit();
+      }
+    } catch (err) {
+      form.dataset.normOk = '1';                        // if the check fails, never block the user
+      form.submit();
+    }
+  });
+
+  // When the user edits the text after a reminder, show the normal button again
+  document.addEventListener('input', function (e) {
+    const form = e.target.closest ? e.target.closest('form.norm-check') : null;
+    if (!form) return;
+    const box = form.querySelector('.norm-warning');
+    if (box) {
+      box.remove();
+      const submitBtn = form.querySelector('button[type="submit"]');
+      if (submitBtn) submitBtn.classList.remove('d-none');
+    }
+  });
+})();
+</script>
+{% endif %}

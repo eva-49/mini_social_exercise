@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, session, flash, g
+from flask import Flask, render_template, request, redirect, url_for, session, flash, g, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 from cryptography.fernet import Fernet
 import collections
@@ -865,6 +865,77 @@ def loop_color(user_id):
     b = int(h[4:6], 16)
     return f'rgb({r % 128 + 80}, {g % 128 + 80}, {b % 128 + 80})'
 
+def get_risk_level(score):
+    """Translates a score into the risk label used on the /rules page."""
+    if score >= 5.0:
+        return "HIGH"
+    elif score >= 3.0:
+        return "MEDIUM"
+    elif score >= 1.0:
+        return "LOW"
+    return "NONE"
+
+
+@app.route('/moderation/check', methods=['POST'])
+def moderation_check():
+    """
+    Called by JavaScript BEFORE a post/comment is submitted.
+    Runs the text through moderate_content() and returns the score, the risk
+    level and a preview of how the text would look after censorship.
+    Nothing is saved here - it is only a preview for the reminder.
+    """
+    if not session.get('user_id'):
+        return jsonify(error='not logged in'), 401
+
+    data = request.get_json(silent=True) or {}
+    content = data.get('content', '') or ''
+
+    moderated, score = moderate_content(content)
+
+    return jsonify(
+        score=round(score, 2),
+        level=get_risk_level(score),
+        moderated=moderated,
+        changed=(moderated != content)
+    )
+
+
+@app.route('/moderation/log', methods=['POST'])
+def moderation_log():
+    """
+    Stores how a user reacted to a reminder ('edited' = changed the text,
+    'posted_anyway' = ignored the reminder). This lets us evaluate whether the
+    reminders reduce offenses (more 'edited' than 'posted_anyway').
+    """
+    user_id = session.get('user_id')
+    if not user_id:
+        return jsonify(error='not logged in'), 401
+
+    data = request.get_json(silent=True) or {}
+    kind = data.get('kind')
+    decision = data.get('decision')
+    score = data.get('score', 0)
+
+    # Only accept known values
+    if kind not in ('post', 'comment') or decision not in ('edited', 'posted_anyway'):
+        return jsonify(error='invalid data'), 400
+
+    db = get_db()
+    # Create the log table on first use
+    db.execute('''
+        CREATE TABLE IF NOT EXISTS warning_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            score REAL,
+            decision TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    db.execute('INSERT INTO warning_log (user_id, kind, score, decision) VALUES (?, ?, ?, ?)',
+               (user_id, kind, score, decision))
+    db.commit()
+    return jsonify(ok=True)
 
 # ----- Functions to be implemented are below
 # Coding Assignment #2
@@ -883,10 +954,50 @@ def user_risk_analysis(user_id):
             password: admin
         Then, navigate to the /admin endpoint. (http://localhost:8080/admin)
     """
-    
-    score = 0
 
-    return score;
+
+    # Load the user (we need the profile text and the creation date)
+    user = query_db('SELECT profile, created_at FROM users WHERE id = ?', (user_id,), one=True)
+    if not user:
+        return 0
+ 
+    # Step 1: score of the profile text (empty profile -> score 0)
+    _, profile_score = moderate_content(user['profile'] or '')
+ 
+    # Step 2: average score over all posts of the user (0 if there are none)
+    posts = query_db('SELECT content FROM posts WHERE user_id = ?', (user_id,))
+    if posts:
+        post_scores = [moderate_content(p['content'])[1] for p in posts]
+        average_post_score = sum(post_scores) / len(post_scores)
+    else:
+        average_post_score = 0
+ 
+    # Step 3: average score over all comments of the user (0 if there are none)
+    comments = query_db('SELECT content FROM comments WHERE user_id = ?', (user_id,))
+    if comments:
+        comment_scores = [moderate_content(c['content'])[1] for c in comments]
+        average_comment_score = sum(comment_scores) / len(comment_scores)
+    else:
+        average_comment_score = 0
+ 
+    # Step 4: weighted combination (posts count three times as much)
+    content_risk_score = (profile_score * 1) + (average_post_score * 3) + (average_comment_score * 1)
+ 
+    # Step 5: age multiplier (new accounts are treated as riskier)
+    created_at = user['created_at']
+    if isinstance(created_at, str):  # safety net in case the DB returns a string
+        created_at = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
+    account_age_days = (datetime.utcnow() - created_at).days
+ 
+    if account_age_days < 7:
+        user_risk_score = content_risk_score * 1.5
+    elif account_age_days < 30:
+        user_risk_score = content_risk_score * 1.2
+    else:
+        user_risk_score = content_risk_score
+ 
+    # Step 6: cap at 5.0
+    return min(5.0, user_risk_score)
 
     
 # Assignment 2.1
@@ -907,10 +1018,45 @@ def moderate_content(content):
     Then, navigate to the /admin endpoint. (http://localhost:8080/admin)
     """
 
-    moderated_content = content
-    score = 0
-    
-    return moderated_content, score
+    if not content:
+        return content or '', 0
+ 
+    def word_pattern(words):
+        # Whole-word match (also works for words with special characters),
+        # case-insensitive. Longest words first so longer matches win.
+        escaped = [re.escape(w) for w in sorted(words, key=len, reverse=True)]
+        return re.compile(r'(?<!\w)(?:' + '|'.join(escaped) + r')(?!\w)', re.IGNORECASE)
+ 
+    # --- Stage 1.1: severe violations -> remove the whole content, score 5.0 ---
+    # Rule 1.1.1: Tier 1 words
+    if TIER1_WORDS and word_pattern(TIER1_WORDS).search(content):
+        return '[content removed due to severe violation]', 5.0
+ 
+    # Rule 1.1.2: Tier 2 phrases (spam / scam)
+    if TIER2_PHRASES and word_pattern(TIER2_PHRASES).search(content):
+        return '[content removed due to spam/scam policy]', 5.0
+ 
+    # --- Stage 1.2: scored violations, content is filtered ---
+    moderated = content
+    score = 0.0
+ 
+    # Rule 1.2.1: Tier 3 words are replaced by '*' of the same length, +2.0 each
+    if TIER3_WORDS:
+        moderated, count = word_pattern(TIER3_WORDS).subn(lambda m: '*' * len(m.group()), moderated)
+        score += 2.0 * count
+ 
+    # Rule 1.2.2: external links are replaced by '[link removed]', +2.0 each
+    url_pattern = re.compile(r'(?:https?://|www\.)\S+', re.IGNORECASE)
+    moderated, link_count = url_pattern.subn('[link removed]', moderated)
+    score += 2.0 * link_count
+ 
+    # Rule 1.2.3: excessive capitalization (+0.5, text stays unchanged)
+    # Checked on the original text: >15 letters and >70% of them uppercase
+    letters = [c for c in content if c.isalpha()]
+    if len(letters) > 15 and sum(c.isupper() for c in letters) / len(letters) > 0.7:
+        score += 0.5
+ 
+    return moderated, score
 
 # Coding Assignment #3
 # Assignment 3.1

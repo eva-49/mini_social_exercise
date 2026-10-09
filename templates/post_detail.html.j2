@@ -109,7 +109,7 @@
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <div class="modal-body">
-        <form action="/posts/{{ post.id }}/comment" method="POST">
+        <form action="/posts/{{ post.id }}/comment" method="POST" class="norm-check" data-kind="comment">
           <div class="mb-3">
             <label for="comment-content-{{ post.id }}" class="form-label">Your Comment</label>
             <textarea class="form-control" id="comment-content-{{ post.id }}" name="content" rows="3" required></textarea>
