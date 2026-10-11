@@ -199,7 +199,7 @@ def feed():
                            page=page, # Pass current page number
                            per_page=POSTS_PER_PAGE, # Pass items per page
                            reaction_emojis=REACTION_EMOJIS,
-                           reaction_types=REACTION_TYPES
+                           reaction_types=REACTION_TYPES,
                            todo_posts=get_contribution_todo(current_user_id))
 
 @app.route('/posts/new', methods=['POST'])
