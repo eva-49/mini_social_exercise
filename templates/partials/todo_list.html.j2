@@ -1,0 +1,54 @@
+{# Feature 2 - Design Claim 1 (Chapter 2): contribution to-do list.
+   Included in feed.html.j2 below the "Create a new post" card.
+   "Contribution" = reacting to or commenting on a post of someone you follow. #}
+{% if session.get('user_id') and page == 1 %}
+<div class="col-md-8 mx-auto mb-4">
+  <div class="card shadow-sm border-primary">
+    <div class="card-body">
+      <h5 class="card-title mb-1">Your to-do list: posts from people you follow</h5>
+
+      {% if todo_posts %}
+        {% set total = todo_posts | length %}
+        {% set done_count = todo_posts | selectattr('done') | list | length %}
+        <p class="text-muted small mb-2">
+          React to or comment on a post to tick it off. Done: {{ done_count }} / {{ total }}
+        </p>
+        <div class="progress mb-3" style="height: 8px;">
+          <div class="progress-bar bg-success" role="progressbar"
+               style="width: {{ (done_count * 100 / total) | round | int }}%;"></div>
+        </div>
+
+        <ul class="list-group list-group-flush">
+          {% for t in todo_posts %}
+          <li class="list-group-item d-flex justify-content-between align-items-center px-0">
+            <div>
+              {% if t.done %}
+                <span class="text-success me-2">&#10004;</span>
+                <a href="/posts/{{ t.id }}" class="text-muted text-decoration-line-through"><strong>{{ t.username }}</strong>: {{ t.snippet }}</a>
+              {% else %}
+                <span class="text-muted me-2">&#9744;</span>
+                <a href="/posts/{{ t.id }}"><strong>{{ t.username }}</strong>: {{ t.snippet }}</a>
+              {% endif %}
+            </div>
+            {% if not t.done %}
+            <!-- Quick action: a like also counts as contribution -->
+            <form action="{{ url_for('add_reaction') }}" method="POST" class="ms-2">
+              <input type="hidden" name="post_id" value="{{ t.id }}">
+              <input type="hidden" name="reaction" value="like">
+              <button type="submit" class="btn btn-sm btn-light" title="React with a like">&#10084;&#65039;</button>
+            </form>
+            {% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+
+        {% if done_count == total %}
+        <p class="text-success small mt-3 mb-0">All done! New posts of people you follow will appear here.</p>
+        {% endif %}
+      {% else %}
+        <p class="text-muted mb-0">Follow some people and their latest posts will show up here as your personal to-do list.</p>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endif %}

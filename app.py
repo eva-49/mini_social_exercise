@@ -199,7 +199,8 @@ def feed():
                            page=page, # Pass current page number
                            per_page=POSTS_PER_PAGE, # Pass items per page
                            reaction_emojis=REACTION_EMOJIS,
-                           reaction_types=REACTION_TYPES)
+                           reaction_types=REACTION_TYPES
+                           todo_posts=get_contribution_todo(current_user_id))
 
 @app.route('/posts/new', methods=['POST'])
 def add_post():
@@ -314,13 +315,25 @@ def user_profile(username):
             is_currently_following = True
     # --
 
+    # Extra profile categories (Feature 1), moderated again before displaying
+    profile_fields = []
+    for field in get_profile_fields(user['id']):
+        field_dict = dict(field)
+        field_dict['category'], _ = moderate_content(field_dict['category'])
+        field_dict['value'], _ = moderate_content(field_dict['value'])
+        profile_fields.append(field_dict)
+    # Contribution points and rank (Feature 3)
+    points_info = get_contribution_points(user['id'])
+
     return render_template('user_profile.html.j2', 
                            user=user, 
                            posts=posts, 
                            comments=comments,
                            followers_count=followers_count, 
                            following_count=following_count,
-                           is_following=is_currently_following)
+                           is_following=is_currently_following,
+                           profile_fields=profile_fields,
+                           points_info=points_info)
     
 
 @app.route('/u/<username>/followers')
@@ -936,6 +949,269 @@ def moderation_log():
                (user_id, kind, score, decision))
     db.commit()
     return jsonify(ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Coding Assignment #1 - three features
+#   Feature 1: Chapter 3, Design Claim 18 - editable profile with own categories
+#   Feature 2: Chapter 2, Design Claim 1  - contribution to-do list on the feed
+#   Feature 3: Chapter 2, Design Claim 23 - contribution points + Top-10 rank in the profile
+# ---------------------------------------------------------------------------
+
+
+# ===========================================================================
+# FEATURE 1: Design Claim 18 (Chapter 3)
+# "Providing user profile pages and flexibility in personalizing them
+#  increases self-disclosure and interpersonal liking and thus bonds-based
+#  commitment."
+# Users can edit their bio/location and add their own profile categories
+# (e.g. occupation, studies, hobbies). All texts pass through moderate_content().
+# ===========================================================================
+
+# Suggested categories shown in the dropdown (users can also type their own)
+PROFILE_CATEGORY_SUGGESTIONS = [
+    'Occupation', 'Studies', 'Hobbies', 'Favorite music',
+    'Favorite books & films', 'Languages', 'Currently learning', 'Fun fact'
+]
+MAX_PROFILE_FIELDS = 10      # maximum number of extra categories per user
+
+
+def ensure_profile_fields_table(db):
+    """Creates the table for the extra profile categories on first use."""
+    db.execute('''
+        CREATE TABLE IF NOT EXISTS profile_fields (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            category TEXT NOT NULL,
+            value TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    db.commit()
+
+
+def get_profile_fields(user_id):
+    """Returns all extra profile categories of a user (oldest first)."""
+    ensure_profile_fields_table(get_db())
+    return query_db(
+        'SELECT id, category, value FROM profile_fields WHERE user_id = ? ORDER BY id ASC',
+        (user_id,)
+    ) or []
+
+
+@app.route('/profile/edit', methods=['GET', 'POST'])
+def edit_profile():
+    """Lets the logged-in user change bio/location and manage own profile categories."""
+    user_id = session.get('user_id')
+    if not user_id:
+        flash('You must be logged in to edit your profile.', 'danger')
+        return redirect(url_for('login'))
+
+    db = get_db()
+    ensure_profile_fields_table(db)
+
+    if request.method == 'POST':
+        action = request.form.get('action')
+
+        # --- Change bio and location ---------------------------------------
+        if action == 'save_basic':
+            new_bio = (request.form.get('profile') or '').strip()
+            new_location = (request.form.get('location') or '').strip()
+
+            # Every text goes through the moderation function first
+            bio_moderated, bio_score = moderate_content(new_bio)
+            location_moderated, location_score = moderate_content(new_location)
+
+            if bio_score >= 5.0 or location_score >= 5.0:
+                # HIGH risk -> do not save at all
+                flash('Your profile text violates the community rules and was not saved.', 'danger')
+            else:
+                db.execute('UPDATE users SET profile = ?, location = ? WHERE id = ?',
+                           (bio_moderated, location_moderated, user_id))
+                db.commit()
+                if bio_moderated != new_bio or location_moderated != new_location:
+                    flash('Profile saved, but some parts were censored because of the community rules.', 'warning')
+                else:
+                    flash('Profile updated.', 'success')
+
+        # --- Add a new category (suggested or own) -------------------------
+        elif action == 'add_field':
+            choice = (request.form.get('category_choice') or '').strip()
+            custom = (request.form.get('category_custom') or '').strip()
+            category = custom if custom else choice      # own category wins
+            value = (request.form.get('value') or '').strip()
+
+            current = query_db('SELECT COUNT(*) AS cnt FROM profile_fields WHERE user_id = ?',
+                               (user_id,), one=True)
+            current_count = current['cnt'] if current else 0
+
+            if not category or not value:
+                flash('Please choose or enter a category and fill in a value.', 'warning')
+            elif len(category) > 30 or len(value) > 200:
+                flash('Category: max. 30 characters, value: max. 200 characters.', 'warning')
+            elif current_count >= MAX_PROFILE_FIELDS:
+                flash(f'You can have at most {MAX_PROFILE_FIELDS} categories. Delete one first.', 'warning')
+            else:
+                category_moderated, category_score = moderate_content(category)
+                value_moderated, value_score = moderate_content(value)
+
+                if category_score >= 5.0 or value_score >= 5.0:
+                    flash('This entry violates the community rules and was not saved.', 'danger')
+                else:
+                    db.execute('INSERT INTO profile_fields (user_id, category, value) VALUES (?, ?, ?)',
+                               (user_id, category_moderated, value_moderated))
+                    db.commit()
+                    if category_moderated != category or value_moderated != value:
+                        flash('Category added, but some parts were censored.', 'warning')
+                    else:
+                        flash('Category added.', 'success')
+
+        # --- Delete a category (only own entries) --------------------------
+        elif action == 'delete_field':
+            field_id = request.form.get('field_id')
+            db.execute('DELETE FROM profile_fields WHERE id = ? AND user_id = ?', (field_id, user_id))
+            db.commit()
+            flash('Entry removed.', 'success')
+
+        # Post/Redirect/Get: show the page again with the new state
+        return redirect(url_for('edit_profile'))
+
+    user = query_db('SELECT username, profile, location FROM users WHERE id = ?', (user_id,), one=True)
+    return render_template('edit_profile.html.j2',
+                           user=dict(user),
+                           fields=get_profile_fields(user_id),
+                           suggestions=PROFILE_CATEGORY_SUGGESTIONS,
+                           max_fields=MAX_PROFILE_FIELDS)
+
+# ===========================================================================
+# FEATURE 2: Design Claim 1 (Chapter 2)
+# "Making the list of needed contributions easily visible increases the
+#  likelihood that the community will provide them."
+# Definition of "contribution" on MiniSocial: reacting to or commenting on a
+# post of someone you follow. The feed shows the latest posts of followed users
+# as a to-do list; an entry is ticked off as soon as the user has reacted or
+# commented on that post.
+# ===========================================================================
+
+def get_contribution_todo(user_id, limit=5):
+    """
+    Returns the latest `limit` posts of followed users as a to-do list.
+    Each entry has done=True if the user already reacted to or commented on it.
+    Open entries are listed first.
+    """
+    if not user_id:
+        return []
+
+    rows = query_db('''
+        SELECT p.id, p.content, u.id AS author_id, u.username,
+               EXISTS(SELECT 1 FROM reactions r WHERE r.post_id = p.id AND r.user_id = ?) AS reacted,
+               EXISTS(SELECT 1 FROM comments c WHERE c.post_id = p.id AND c.user_id = ?) AS commented
+        FROM posts p
+        JOIN users u ON p.user_id = u.id
+        WHERE p.user_id IN (SELECT followed_id FROM follows WHERE follower_id = ?)
+          AND p.user_id != ?
+        ORDER BY p.created_at DESC
+        LIMIT ?
+    ''', (user_id, user_id, user_id, user_id, limit)) or []
+
+    todo = []
+    for row in rows:
+        # The preview is moderated like every other displayed text
+        text, _ = moderate_content(row['content'])
+        snippet = text if len(text) <= 80 else text[:77] + '...'
+        todo.append({
+            'id': row['id'],
+            'user_id': row['author_id'],
+            'username': row['username'],
+            'snippet': snippet,
+            'done': bool(row['reacted'] or row['commented'])
+        })
+
+    # Open tasks first (sort is stable, so the order by date stays inside each group)
+    todo.sort(key=lambda entry: entry['done'])
+    return todo
+
+
+# ===========================================================================
+# FEATURE 3: Design Claim 23 (Chapter 2)
+# "Rewards - whether in the form of status, privileges, or material benefits -
+#  motivate contributions."
+# Contribution points = 5 x posts + 3 x comments + 1 x reactions (max. 50).
+# The 10 users with the most points get a "Top contributor" rank that is shown
+# on their profile page.
+# ===========================================================================
+
+POINTS_PER_POST = 5
+POINTS_PER_COMMENT = 3
+POINTS_PER_REACTION = 1
+MAX_REACTION_POINTS = 50     # cap, so cheap reactions cannot be farmed endlessly
+TOP_N_CONTRIBUTORS = 10
+
+
+def get_leaderboard():
+    """Returns all users with their points, best first (the admin account is excluded)."""
+    rows = query_db('''
+        SELECT u.id, u.username,
+               (SELECT COUNT(*) FROM posts p WHERE p.user_id = u.id) AS post_count,
+               (SELECT COUNT(*) FROM comments c WHERE c.user_id = u.id) AS comment_count,
+               (SELECT COUNT(*) FROM reactions r WHERE r.user_id = u.id) AS reaction_count
+        FROM users u
+        WHERE u.username != 'admin'
+    ''') or []
+
+    board = []
+    for row in rows:
+        reaction_points = min(row['reaction_count'] * POINTS_PER_REACTION, MAX_REACTION_POINTS)
+        points = (row['post_count'] * POINTS_PER_POST
+                  + row['comment_count'] * POINTS_PER_COMMENT
+                  + reaction_points)
+        board.append({
+            'user_id': row['id'],
+            'username': row['username'],
+            'post_count': row['post_count'],
+            'comment_count': row['comment_count'],
+            'reaction_count': row['reaction_count'],
+            'points': points
+        })
+
+    # Most points first; on a tie the older account ranks higher
+    board.sort(key=lambda entry: (-entry['points'], entry['user_id']))
+    return board
+
+
+def get_contribution_points(user_id):
+    """
+    Returns the points, the rank (1-10 or None) and how many points are still
+    missing for the Top 10 for one user.
+    """
+    board = get_leaderboard()
+
+    info = {
+        'points': 0, 'rank': None, 'points_to_top10': 1,
+        'formula': 'no contributions yet'
+    }
+
+    # Points needed to enter the Top 10 (0 if there are fewer than 10 users)
+    threshold = board[TOP_N_CONTRIBUTORS - 1]['points'] if len(board) >= TOP_N_CONTRIBUTORS else 0
+
+    for position, entry in enumerate(board, start=1):
+        if entry['user_id'] == user_id:
+            info['points'] = entry['points']
+            info['formula'] = (
+                f"{entry['post_count']} posts x {POINTS_PER_POST} + "
+                f"{entry['comment_count']} comments x {POINTS_PER_COMMENT} + "
+                f"{entry['reaction_count']} reactions x {POINTS_PER_REACTION} "
+                f"(max. {MAX_REACTION_POINTS} points from reactions)"
+            )
+            # Only users with at least 1 point can be ranked
+            if position <= TOP_N_CONTRIBUTORS and entry['points'] > 0:
+                info['rank'] = position
+            else:
+                info['points_to_top10'] = max(1, threshold - entry['points'] + 1)
+            break
+
+    return info
+
 
 # ----- Functions to be implemented are below
 # Coding Assignment #2

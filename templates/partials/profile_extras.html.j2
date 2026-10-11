@@ -1,0 +1,44 @@
+{# Features 1 + 3 on the profile page.
+   Included in user_profile.html.j2 below the bio.
+   Needs the variables: user, profile_fields, points_info #}
+{% set is_own = session.get('username') == user.username %}
+
+{# Feature 1 - Design Claim 18 (Chapter 3): own categories #}
+{% if profile_fields or is_own %}
+<div class="card shadow-sm mb-3">
+  <div class="card-body">
+    <div class="d-flex justify-content-between align-items-start mb-2">
+      <h5 class="card-title mb-0">About {{ user.username }}</h5>
+      {% if is_own %}
+      <a href="{{ url_for('edit_profile') }}" class="btn btn-sm btn-primary">Edit profile</a>
+      {% endif %}
+    </div>
+    {% if profile_fields %}
+    <dl class="row mb-0">
+      {% for f in profile_fields %}
+      <dt class="col-sm-4">{{ f.category }}</dt>
+      <dd class="col-sm-8">{{ f.value }}</dd>
+      {% endfor %}
+    </dl>
+    {% else %}
+    <p class="text-muted mb-0">Add your occupation, studies, hobbies or your own categories with "Edit profile".</p>
+    {% endif %}
+  </div>
+</div>
+{% endif %}
+
+{# Feature 3 - Design Claim 23 (Chapter 2): contribution points and Top-10 rank #}
+<div class="card shadow-sm mb-3">
+  <div class="card-body">
+    <h5 class="card-title mb-2">
+      Contribution points: {{ points_info.points }}
+      {% if points_info.rank %}
+      <span class="badge bg-warning text-dark ms-2">&#127942; Top contributor &ndash; Rank #{{ points_info.rank }}</span>
+      {% endif %}
+    </h5>
+    <p class="small text-muted mb-0">{{ points_info.formula }}</p>
+    {% if is_own and not points_info.rank %}
+    <p class="small mb-0 mt-2">You need {{ points_info.points_to_top10 }} more points to reach the Top 10.</p>
+    {% endif %}
+  </div>
+</div>
