@@ -37,6 +37,7 @@
       {% endif %}
     </h5>
     <p class="small text-muted mb-0">{{ points_info.formula }}</p>
+    <a href="{{ url_for('leaderboard') }}" class="small">View the Top 10 contributors</a>
     {% if is_own and not points_info.rank %}
     <p class="small mb-0 mt-2">You need {{ points_info.points_to_top10 }} more points to reach the Top 10.</p>
     {% endif %}

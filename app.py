@@ -1212,8 +1212,20 @@ def get_contribution_points(user_id):
 
     return info
 
+@app.route('/leaderboard')
+def leaderboard():
+    """Shows the 10 users with the most contribution points (only users with at least 1 point)."""
+    board = get_leaderboard()
+    top = [entry for entry in board[:TOP_N_CONTRIBUTORS] if entry['points'] > 0]
+    return render_template('leaderboard.html.j2',
+                           top=top,
+                           points_per_post=POINTS_PER_POST,
+                           points_per_comment=POINTS_PER_COMMENT,
+                           points_per_reaction=POINTS_PER_REACTION,
+                           max_reaction_points=MAX_REACTION_POINTS)
 
 # ----- Functions to be implemented are below
+
 # Coding Assignment #2
 
 # Assignment 2.2

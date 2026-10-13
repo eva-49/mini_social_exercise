@@ -1,0 +1,44 @@
+{% extends "base.html.j2" %}
+{% block content %}
+{% from "macros/user_macros.html.j2" import user_display %}
+
+{# Feature 3 - Design Claim 23 (Chapter 2): Top-10 contributors #}
+<div class="col-md-8 mx-auto pt-4">
+  <h2 class="mb-1">&#127942; Top 10 contributors</h2>
+  <p class="text-muted">
+    Points = {{ points_per_post }} &times; posts + {{ points_per_comment }} &times; comments
+    + {{ points_per_reaction }} &times; reactions (max. {{ max_reaction_points }} points from reactions).
+  </p>
+
+  {% if top %}
+  <div class="card shadow-sm">
+    <div class="table-responsive">
+      <table class="table table-hover mb-0 align-middle">
+        <thead>
+          <tr>
+            <th>Rank</th><th>User</th>
+            <th class="text-end">Posts</th><th class="text-end">Comments</th>
+            <th class="text-end">Reactions</th><th class="text-end">Points</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for e in top %}
+          <tr {% if session.get('username') == e.username %}class="table-primary"{% endif %}>
+            <td><strong>#{{ loop.index }}</strong></td>
+            <td><a href="/u/{{ e.username }}">{{ user_display(e.username) }}</a></td>
+            <td class="text-end">{{ e.post_count }}</td>
+            <td class="text-end">{{ e.comment_count }}</td>
+            <td class="text-end">{{ e.reaction_count }}</td>
+            <td class="text-end"><strong>{{ e.points }}</strong></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <p class="text-muted">Nobody has collected points yet. Write a post, comment or react to get on the list!</p>
+  {% endif %}
+</div>
+
+{% endblock %}
