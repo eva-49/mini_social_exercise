@@ -1654,8 +1654,8 @@ import math
 POSITIVE_REACTIONS = ('like', 'love', 'laugh', 'wow')   # sad / angry do not count as interest
 RECOMMEND_COUNT = 5          # number of posts shown on the "Recommended" tab
 MAX_CANDIDATES = 3000        # only the newest posts are considered (keeps it fast)
-FOLLOW_BONUS = 0.30          # added to the score if the user follows the author
-AUTHOR_BONUS = 0.20          # max. bonus if the user liked posts of this author before
+FOLLOW_BONUS = 0.10          # added to the score if the user follows the author
+AUTHOR_BONUS = 0.05          # max. bonus if the user liked posts of this author before
 
 STOPWORDS = {
     'the', 'and', 'for', 'that', 'this', 'with', 'you', 'are', 'was', 'but', 'not', 'have',
