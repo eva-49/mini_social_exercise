@@ -1,0 +1,59 @@
+{% extends "base.html.j2" %}
+{% block content %}
+{% from "macros/user_macros.html.j2" import user_display %}
+
+{# Design Claim 19 (Chapter 5): newcomers introduce themselves, members welcome them #}
+<div class="col-md-8 mx-auto pt-4">
+  <h2 class="mb-1">Introductions</h2>
+  <p class="text-muted">New here? Tell the community who you are. Members can answer with a welcome message.</p>
+
+  {% if session.get('user_id') and not has_intro %}
+  <div class="card shadow-sm mb-4 border-primary">
+    <div class="card-body">
+      <h5 class="card-title">Introduce yourself</h5>
+      <form action="{{ url_for('add_introduction') }}" method="POST">
+        <div class="mb-3">
+          <textarea class="form-control" name="content" rows="3" maxlength="500" required
+                    placeholder="Hi, I'm {{ session.get('username') }}! I like ... and I'm here because ..."></textarea>
+        </div>
+        <button type="submit" class="btn btn-primary">Introduce myself</button>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+
+  {% for i in intros %}
+  <div class="card shadow-sm mb-3" id="intro-{{ i.id }}">
+    <div class="card-body">
+      <div class="d-flex justify-content-between align-items-center">
+        <h5 class="card-title mb-0"><a href="/u/{{ i.username }}">{{ user_display(i.username) }}</a></h5>
+        <small class="text-muted">{{ i.created_at | datetimeformat }}</small>
+      </div>
+      <p class="mt-2">{{ i.content }}</p>
+
+      {% if i.welcomes %}
+      <div class="border-top pt-2">
+        <div class="small text-muted mb-1">&#128075; {{ i.welcomes | length }} welcome message{{ 's' if i.welcomes | length != 1 else '' }}</div>
+        {% for w in i.welcomes %}
+        <div class="small"><strong>{{ w.username }}:</strong> {{ w.message }}</div>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      {% if session.get('user_id') and session.get('user_id') != i.user_id and not i.welcomed_by_me %}
+      <form action="{{ url_for('welcome_newcomer', intro_id=i.id) }}" method="POST" class="d-flex mt-3">
+        <input type="text" class="form-control form-control-sm me-2" name="message" maxlength="140"
+               placeholder="Say something, e.g. a shared interest (optional)">
+        <button type="submit" class="btn btn-sm btn-primary text-nowrap">Welcome &#128075;</button>
+      </form>
+      {% elif i.welcomed_by_me %}
+      <div class="small text-success mt-3">&#10003; You welcomed {{ i.username }}</div>
+      {% endif %}
+    </div>
+  </div>
+  {% else %}
+  <p class="text-muted">Nobody has introduced themselves yet. Be the first!</p>
+  {% endfor %}
+</div>
+
+{% endblock %}

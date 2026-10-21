@@ -1,0 +1,77 @@
+{% extends "base.html.j2" %}
+{% block content %}
+{% from "macros/user_macros.html.j2" import user_display %}
+
+{# Design Claim 3 (Chapter 5): recruit new members through the social networks of current members #}
+<div class="col-md-8 mx-auto pt-4">
+  <h2 class="mb-1">Invite your friends</h2>
+  <p class="text-muted">
+    Share your personal link. Everyone who signs up through it follows you right away,
+    so their feed is not empty from day one.
+  </p>
+
+  <div class="card shadow-sm mb-4">
+    <div class="card-body">
+      <h5 class="card-title">Your personal invitation link</h5>
+      <div class="input-group">
+        <input type="text" class="form-control" id="invite-link" value="{{ invite_link }}" readonly>
+        <button class="btn btn-primary" type="button" id="copy-btn" onclick="copyInviteLink()">Copy link</button>
+      </div>
+      <p class="small text-muted mt-2 mb-0">
+        Tip: send it to a friend in a personal message. Invitations from people you know are the best way to find new members.
+      </p>
+    </div>
+  </div>
+
+  <div class="card shadow-sm mb-4">
+    <div class="card-body">
+      <h5 class="card-title">Friends who joined through your link ({{ friends | length }})</h5>
+      {% if friends %}
+      <ul class="list-group list-group-flush">
+        {% for f in friends %}
+        <li class="list-group-item d-flex justify-content-between align-items-center px-0">
+          <div>
+            <a href="/u/{{ f.username }}">{{ user_display(f.username) }}</a>
+            <small class="text-muted ms-2">joined {{ f.created_at | datetimeformat }}</small>
+          </div>
+          {% if f.i_follow %}
+            <span class="text-success small">&#10003; You follow them</span>
+          {% else %}
+            <form action="{{ url_for('follow_user', user_id=f.id) }}" method="POST">
+              <button type="submit" class="btn btn-sm btn-outline-primary">Follow back</button>
+            </form>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="text-muted mb-0">Nobody has joined through your link yet.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <a href="{{ url_for('feed') }}" class="btn btn-light mb-4">&laquo; Back to the feed</a>
+</div>
+
+<script>
+// Copies the invitation link to the clipboard and gives visual feedback
+function copyInviteLink() {
+  const input = document.getElementById('invite-link');
+  const button = document.getElementById('copy-btn');
+  const done = function () {
+    button.textContent = 'Copied!';
+    setTimeout(function () { button.textContent = 'Copy link'; }, 2000);
+  };
+  input.select();
+  input.setSelectionRange(0, 99999);
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(input.value).then(done).catch(function () {
+      document.execCommand('copy'); done();
+    });
+  } else {
+    document.execCommand('copy'); done();
+  }
+}
+</script>
+
+{% endblock %}

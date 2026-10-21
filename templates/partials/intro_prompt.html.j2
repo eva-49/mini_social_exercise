@@ -1,0 +1,24 @@
+{# Design Claim 19 (Chapter 5): prompt for newcomers to introduce themselves.
+   Included in feed.html.j2 below the to-do list. Only visible for accounts younger than
+   14 days that have not written an introduction yet. #}
+{% if page == 1 and needs_introduction(session.get('user_id')) %}
+<div class="col-md-8 mx-auto mb-4">
+  <div class="card shadow-sm border-success">
+    <div class="card-body">
+      <h5 class="card-title">&#128075; Welcome, {{ session.get('username') }}! Introduce yourself</h5>
+      <p class="text-muted small mb-2">
+        Tell the community a bit about you. Members can answer with a welcome message,
+        and it gives everyone something to talk about.
+      </p>
+      <form action="{{ url_for('add_introduction') }}" method="POST">
+        <div class="mb-2">
+          <textarea class="form-control" name="content" rows="2" maxlength="500" required
+                    placeholder="Hi, I'm {{ session.get('username') }}! I like ..."></textarea>
+        </div>
+        <button type="submit" class="btn btn-success btn-sm">Introduce myself</button>
+        <a href="{{ url_for('introductions') }}" class="btn btn-light btn-sm ms-2">See who joined recently</a>
+      </form>
+    </div>
+  </div>
+</div>
+{% endif %}

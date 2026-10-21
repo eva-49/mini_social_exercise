@@ -423,6 +423,13 @@ def privacy():
 
 @app.route('/signup', methods=['GET', 'POST'])
 def signup():
+    # --- Design Claim 3: remember the code of /signup?invite=CODE ---
+    invite_param = request.args.get('invite')
+    if invite_param:
+        session['invite_code'] = invite_param
+        inviter_name = get_inviter_name(invite_param)
+        if inviter_name and request.method == 'GET':
+            flash(f'{inviter_name} invited you to MiniSocial!', 'info')
     if request.method == 'POST':
         username = request.form['username']
         password = request.form['password']
@@ -444,6 +451,9 @@ def signup():
             # 1. Get the ID of the user we just created.
             new_user_id = cur.lastrowid
 
+            # --- Design Claim 3: connect the newcomer with the inviter ---
+            inviter_id = register_invite(db, new_user_id, session.get('invite_code'))
+
             # 2. Add user info to the session cookie.
             session.clear() # Clear any old session data
             session['user_id'] = new_user_id
@@ -451,7 +461,11 @@ def signup():
 
             # 3. Flash a welcome message and redirect to the feed.
             flash(f'Welcome, {username}! Your account has been created.', 'success')
+            if inviter_id: 
+                inviter = db.execute('SELECT username FROM users WHERE id = ?', (inviter_id,)).fetchone()
+                flash(f'You joined through the invitation of {inviter["username"]} and now follow them.', 'info')
             return redirect(url_for('feed')) # Redirect to the main feed/dashboard
+    
 
         except sqlite3.IntegrityError:
             flash('Username already taken. Please choose another one.', 'danger')
@@ -1224,6 +1238,284 @@ def leaderboard():
                            points_per_reaction=POINTS_PER_REACTION,
                            max_reaction_points=MAX_REACTION_POINTS)
 
+# ---------------------------------------------------------------------------
+# Coding Assignment #3 - two Design Claims from Chapter 5
+#
+#   Feature 1: Design Claim 3  - invite friends with a personal invitation link
+#   Feature 2: Design Claim 19 - newcomers introduce themselves, members welcome them
+#
+# ---------------------------------------------------------------------------
+import secrets
+
+
+def ensure_newcomer_tables(db):
+    """Creates all tables of the two features on first use."""
+    db.executescript('''
+        -- every user gets one personal invitation code
+        CREATE TABLE IF NOT EXISTS invite_codes (
+            user_id INTEGER PRIMARY KEY,
+            code TEXT NOT NULL UNIQUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        -- who joined through whose invitation (a user can only be invited once)
+        CREATE TABLE IF NOT EXISTS invite_signups (
+            invitee_id INTEGER PRIMARY KEY,
+            inviter_id INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        -- one introduction text per user
+        CREATE TABLE IF NOT EXISTS introductions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL UNIQUE,
+            content TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        -- welcome messages of members for an introduction (one per member and introduction)
+        CREATE TABLE IF NOT EXISTS intro_welcomes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            intro_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            message TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (intro_id, user_id)
+        );
+    ''')
+    db.commit()
+
+# ===========================================================================
+# FEATURE 1: Design Claim 3 (Chapter 5)
+# "Recruiting new members from the social networks of current members
+#  increases the number of new members more than impersonal methods."
+# Every member has a personal invitation link. Whoever signs up through it
+# automatically follows the inviter, and the inviter sees who joined.
+# ===========================================================================
+
+def get_or_create_invite_code(db, user_id):
+    """Returns the personal invitation code of a user (creates it on first use)."""
+    ensure_newcomer_tables(db)
+    row = db.execute('SELECT code FROM invite_codes WHERE user_id = ?', (user_id,)).fetchone()
+    if row:
+        return row['code']
+    code = secrets.token_urlsafe(6)
+    db.execute('INSERT INTO invite_codes (user_id, code) VALUES (?, ?)', (user_id, code))
+    db.commit()
+    return code
+
+
+def get_inviter_name(code):
+    """Returns the username that belongs to an invitation code (or None if the code is unknown)."""
+    db = get_db()
+    ensure_newcomer_tables(db)
+    row = db.execute('''
+        SELECT u.username FROM invite_codes c JOIN users u ON c.user_id = u.id
+        WHERE c.code = ?
+    ''', (code,)).fetchone()
+    return row['username'] if row else None
+
+
+def register_invite(db, new_user_id, code):
+    """
+    Called right after a successful signup. If the user came through an
+    invitation link, the connection is stored and the newcomer follows the
+    inviter, so the feed is not empty on day one.
+    Returns the id of the inviter or None.
+    """
+    if not code:
+        return None
+    ensure_newcomer_tables(db)
+    row = db.execute('SELECT user_id FROM invite_codes WHERE code = ?', (code,)).fetchone()
+    if not row or row['user_id'] == new_user_id:
+        return None
+
+    inviter_id = row['user_id']
+    db.execute('INSERT OR IGNORE INTO invite_signups (invitee_id, inviter_id) VALUES (?, ?)',
+               (new_user_id, inviter_id))
+    already_following = db.execute('SELECT 1 FROM follows WHERE follower_id = ? AND followed_id = ?',
+                                   (new_user_id, inviter_id)).fetchone()
+    if not already_following:
+        db.execute('INSERT INTO follows (follower_id, followed_id) VALUES (?, ?)', (new_user_id, inviter_id))
+    db.commit()
+    return inviter_id
+
+
+@app.template_global()
+def invite_count(user_id):
+    """Number of friends who joined through the invitation link of this user (used in templates)."""
+    if not user_id:
+        return 0
+    db = get_db()
+    ensure_newcomer_tables(db)
+    row = db.execute('SELECT COUNT(*) AS cnt FROM invite_signups WHERE inviter_id = ?', (user_id,)).fetchone()
+    return row['cnt'] if row else 0
+
+@app.route('/invite')
+def invite():
+    """Shows the personal invitation link and the friends who joined through it."""
+    user_id = session.get('user_id')
+    if not user_id:
+        flash('You must be logged in to invite friends.', 'danger')
+        return redirect(url_for('login'))
+
+    db = get_db()
+    code = get_or_create_invite_code(db, user_id)
+    invite_link = url_for('signup', invite=code, _external=True)
+
+    friends = db.execute('''
+        SELECT u.id, u.username, s.created_at,
+               EXISTS(SELECT 1 FROM follows f WHERE f.follower_id = ? AND f.followed_id = u.id) AS i_follow
+        FROM invite_signups s
+        JOIN users u ON s.invitee_id = u.id
+        WHERE s.inviter_id = ?
+        ORDER BY s.created_at DESC
+    ''', (user_id, user_id)).fetchall()
+
+    return render_template('invite.html.j2', invite_link=invite_link, friends=friends)
+
+
+# ===========================================================================
+# FEATURE 2: Design Claim 19 (Chapter 5)
+# "Encouraging newcomers to reveal themselves publicly in profiles or
+#  introduction threads gives existing group members a basis for conversation
+#  and reciprocation with them and increases interaction between old-timers
+#  and newcomers."
+# New accounts are asked to introduce themselves; all introductions are shown
+# on one page where members can welcome the newcomer with a short message.
+# ===========================================================================
+
+NEWCOMER_DAYS = 14      # accounts younger than this count as newcomers
+
+
+@app.template_global()
+def needs_introduction(user_id):
+    """True if the user is a newcomer (account younger than 14 days) without an introduction (used in templates)."""
+    if not user_id:
+        return False
+    db = get_db()
+    ensure_newcomer_tables(db)
+    user = db.execute('SELECT created_at FROM users WHERE id = ?', (user_id,)).fetchone()
+    if not user or not user['created_at']:
+        return False
+    created_at = user['created_at']
+    if isinstance(created_at, str):
+        created_at = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
+    if (datetime.utcnow() - created_at).days >= NEWCOMER_DAYS:
+        return False
+    intro = db.execute('SELECT 1 FROM introductions WHERE user_id = ?', (user_id,)).fetchone()
+    return intro is None
+
+
+@app.route('/introductions')
+def introductions():
+    """Lists the introductions of members (newest first) together with their welcome messages."""
+    user_id = session.get('user_id')
+    db = get_db()
+    ensure_newcomer_tables(db)
+
+    rows = db.execute('''
+        SELECT i.id, i.content, i.created_at, u.id AS user_id, u.username
+        FROM introductions i
+        JOIN users u ON i.user_id = u.id
+        ORDER BY i.created_at DESC
+        LIMIT 50
+    ''').fetchall()
+
+    intros = []
+    for row in rows:
+        intro = dict(row)
+        intro['content'], _ = moderate_content(intro['content'])      # moderated before displaying
+
+        welcome_rows = db.execute('''
+            SELECT w.message, w.created_at, w.user_id, u.username
+            FROM intro_welcomes w
+            JOIN users u ON w.user_id = u.id
+            WHERE w.intro_id = ?
+            ORDER BY w.created_at ASC
+        ''', (row['id'],)).fetchall()
+
+        intro['welcomes'] = []
+        for welcome_row in welcome_rows:
+            welcome = dict(welcome_row)
+            welcome['message'], _ = moderate_content(welcome['message'])
+            intro['welcomes'].append(welcome)
+        intro['welcomed_by_me'] = any(w['user_id'] == user_id for w in intro['welcomes'])
+        intros.append(intro)
+
+    has_intro = bool(user_id) and db.execute('SELECT 1 FROM introductions WHERE user_id = ?',
+                                             (user_id,)).fetchone() is not None
+    return render_template('introductions.html.j2', intros=intros, has_intro=has_intro)
+
+
+@app.route('/introductions/new', methods=['POST'])
+def add_introduction():
+    """Saves the introduction of the logged-in user (one per user, moderated)."""
+    user_id = session.get('user_id')
+    if not user_id:
+        flash('You must be logged in to introduce yourself.', 'danger')
+        return redirect(url_for('login'))
+
+    db = get_db()
+    ensure_newcomer_tables(db)
+    content = (request.form.get('content') or '').strip()
+
+    if not content:
+        flash('Please write a few words about yourself.', 'warning')
+    elif len(content) > 500:
+        flash('Please keep your introduction under 500 characters.', 'warning')
+    elif db.execute('SELECT 1 FROM introductions WHERE user_id = ?', (user_id,)).fetchone():
+        flash('You have already introduced yourself.', 'info')
+    else:
+        moderated, score = moderate_content(content)
+        if score >= 5.0:
+            flash('Your introduction violates the community rules and was not saved.', 'danger')
+        else:
+            db.execute('INSERT INTO introductions (user_id, content) VALUES (?, ?)', (user_id, moderated))
+            db.commit()
+            if moderated != content:
+                flash('Welcome to the community! Some parts of your introduction were censored.', 'warning')
+            else:
+                flash('Welcome to the community! Your introduction is now visible to everyone.', 'success')
+
+    return redirect(url_for('introductions'))
+
+
+@app.route('/introductions/<int:intro_id>/welcome', methods=['POST'])
+def welcome_newcomer(intro_id):
+    """Adds a (moderated) welcome message of the logged-in user to an introduction."""
+    user_id = session.get('user_id')
+    if not user_id:
+        flash('You must be logged in to welcome someone.', 'danger')
+        return redirect(url_for('login'))
+
+    db = get_db()
+    ensure_newcomer_tables(db)
+    intro = db.execute('SELECT user_id FROM introductions WHERE id = ?', (intro_id,)).fetchone()
+
+    if not intro:
+        flash('Introduction not found.', 'danger')
+        return redirect(url_for('introductions'))
+    if intro['user_id'] == user_id:
+        flash('You cannot welcome yourself.', 'warning')
+        return redirect(url_for('introductions'))
+
+    message = (request.form.get('message') or '').strip()[:140]
+    if not message:
+        message = 'Welcome! \U0001F44B'
+    moderated, score = moderate_content(message)
+
+    if score >= 5.0:
+        flash('Your message violates the community rules and was not saved.', 'danger')
+    else:
+        try:
+            db.execute('INSERT INTO intro_welcomes (intro_id, user_id, message) VALUES (?, ?, ?)',
+                       (intro_id, user_id, moderated))
+            db.commit()
+            flash('Your welcome message was added.', 'success')
+        except sqlite3.IntegrityError:
+            flash('You have already welcomed this member.', 'info')
+
+    return redirect(url_for('introductions') + f'#intro-{intro_id}')
+
+
 # ----- Functions to be implemented are below
 
 # Coding Assignment #2
@@ -1346,7 +1638,58 @@ def moderate_content(content):
  
     return moderated, score
 
-# Coding Assignment #3
+# ---------------------------------------------------------------------------
+# Coding Assignment #3 - Assignment 3.1: recommend()
+#
+# Hybrid recommender:
+#   1. content-based:  TF-IDF + cosine similarity between a post and the
+#      "interest profile" built from all posts the user reacted to positively
+#   2. social signal:  bonus if the author is followed by the user, smaller
+#      bonus if the user liked posts of this author before
+#   3. fallback:       if there are fewer than 5 matches (e.g. new account),
+#      fill up with the most popular posts
+# ---------------------------------------------------------------------------
+import math
+
+POSITIVE_REACTIONS = ('like', 'love', 'laugh', 'wow')   # sad / angry do not count as interest
+RECOMMEND_COUNT = 5          # number of posts shown on the "Recommended" tab
+MAX_CANDIDATES = 3000        # only the newest posts are considered (keeps it fast)
+FOLLOW_BONUS = 0.30          # added to the score if the user follows the author
+AUTHOR_BONUS = 0.20          # max. bonus if the user liked posts of this author before
+
+STOPWORDS = {
+    'the', 'and', 'for', 'that', 'this', 'with', 'you', 'are', 'was', 'but', 'not', 'have',
+    'has', 'had', 'just', 'from', 'they', 'their', 'what', 'when', 'your', 'all', 'can',
+    'out', 'about', 'one', 'get', 'got', 'its', 'our', 'will', 'would', 'there', 'been',
+    'were', 'than', 'then', 'them', 'who', 'how', 'why', 'also', 'very', 'more', 'some',
+    'too', 'any', 'into', 'over', 'only', 'his', 'her', 'she', 'him', 'did', 'does',
+    'doing', 'because', 'while', 'these', 'those', 'such', 'much', 'many', 'here'
+}
+
+
+def tokenize(text):
+    """Lower-cases a text and returns its words without very short words and stop words."""
+    words = re.findall(r"\w+", (text or '').lower())
+    return [w for w in words if len(w) > 2 and w not in STOPWORDS]
+
+
+def tfidf_vector(tokens, idf):
+    """TF-IDF vector (dict word -> weight). TF is damped with a logarithm."""
+    counts = collections.Counter(tokens)
+    return {word: (1 + math.log(count)) * idf.get(word, 0.0) for word, count in counts.items()}
+
+
+def cosine_similarity(vec_a, vec_b):
+    """Cosine of the angle between two sparse vectors: 0 = nothing in common, 1 = identical topic."""
+    if not vec_a or not vec_b:
+        return 0.0
+    dot = sum(weight * vec_b.get(word, 0.0) for word, weight in vec_a.items())
+    norm_a = math.sqrt(sum(w * w for w in vec_a.values()))
+    norm_b = math.sqrt(sum(w * w for w in vec_b.values()))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
 # Assignment 3.1
 def recommend(user_id, filter_following):
     """
@@ -1367,10 +1710,90 @@ def recommend(user_id, filter_following):
     - http://www.configworks.com/mz/handout_recsys_sac2010.pdf
     - https://www.researchgate.net/publication/227268858_Recommender_Systems_Handbook
     """
+    # --- Step 1: candidate posts -------------------------------------------
+    # Not the user's own posts, nothing the user already reacted to.
+    conditions, params = [], []
+    if user_id:
+        conditions.append('p.user_id != ?')
+        params.append(user_id)
+        conditions.append('p.id NOT IN (SELECT post_id FROM reactions WHERE user_id = ?)')
+        params.append(user_id)
+        if filter_following:
+            conditions.append('p.user_id IN (SELECT followed_id FROM follows WHERE follower_id = ?)')
+            params.append(user_id)
+    where = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
 
-    recommended_posts = {} 
+    candidates = query_db(f'''
+        SELECT p.id, p.content, p.created_at, u.username, u.id AS user_id,
+               (SELECT COUNT(*) FROM reactions r WHERE r.post_id = p.id) AS total_reactions
+        FROM posts p
+        JOIN users u ON p.user_id = u.id
+        {where}
+        ORDER BY p.created_at DESC
+        LIMIT ?
+    ''', params + [MAX_CANDIDATES]) or []
 
-    return recommended_posts;
+    if not candidates:
+        return []
+
+    # --- Step 2: what does the user like? ----------------------------------
+    profile_tokens = []                       # words of all positively rated posts
+    liked_authors = collections.Counter()     # author id -> how many of their posts were liked
+    followed = set()
+    if user_id:
+        placeholders = ', '.join('?' for _ in POSITIVE_REACTIONS)
+        liked_posts = query_db(f'''
+            SELECT p.content, p.user_id
+            FROM reactions r
+            JOIN posts p ON r.post_id = p.id
+            WHERE r.user_id = ? AND r.reaction_type IN ({placeholders})
+        ''', (user_id,) + POSITIVE_REACTIONS) or []
+        for liked in liked_posts:
+            profile_tokens.extend(tokenize(liked['content']))
+            liked_authors[liked['user_id']] += 1
+
+        follow_rows = query_db('SELECT followed_id FROM follows WHERE follower_id = ?', (user_id,)) or []
+        followed = {row['followed_id'] for row in follow_rows}
+
+    # --- Step 3: TF-IDF vectors ---------------------------------------------
+    # IDF: words that appear in many posts ("great", "today") count less than rare topic words
+    candidate_tokens = [tokenize(post['content']) for post in candidates]
+    documents = [set(tokens) for tokens in candidate_tokens] + [set(profile_tokens)]
+    document_frequency = collections.Counter()
+    for document in documents:
+        document_frequency.update(document)
+    total_documents = len(documents)
+    idf = {word: math.log((1 + total_documents) / (1 + count)) + 1
+           for word, count in document_frequency.items()}
+
+    profile_vector = tfidf_vector(profile_tokens, idf)
+
+    # --- Step 4: score every candidate --------------------------------------
+    scored = []
+    for post, tokens in zip(candidates, candidate_tokens):
+        score = cosine_similarity(profile_vector, tfidf_vector(tokens, idf))   # topic similarity (0..1)
+        if post['user_id'] in followed:                                        # social signal 1
+            score += FOLLOW_BONUS
+        if liked_authors[post['user_id']] > 0:                                 # social signal 2
+            score += AUTHOR_BONUS * min(liked_authors[post['user_id']], 3) / 3
+        scored.append((score, post))
+
+    # --- Step 5: pick the best 5, fill up with popular posts ----------------
+    ranked = sorted(scored, key=lambda item: (item[0], item[1]['created_at']), reverse=True)
+    chosen = [post for score, post in ranked if score > 0][:RECOMMEND_COUNT]
+
+    if len(chosen) < RECOMMEND_COUNT:
+        # Cold start (new account or too few matches): most popular remaining posts
+        chosen_ids = {post['id'] for post in chosen}
+        popular = sorted((post for _, post in scored if post['id'] not in chosen_ids),
+                         key=lambda post: (post['total_reactions'], post['created_at']),
+                         reverse=True)
+        chosen += popular[:RECOMMEND_COUNT - len(chosen)]
+
+    # The assignment wants reverse-chronological order
+    chosen.sort(key=lambda post: post['created_at'], reverse=True)
+    return chosen
+
 
 if __name__ == '__main__':
     app.run(debug=True, port=8080)
